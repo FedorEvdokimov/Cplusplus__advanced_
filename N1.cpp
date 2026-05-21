@@ -1,258 +1,295 @@
+// ============================================================================
+// ЗАДАЧА: Система управления пользователями и группами
+// ТРЕБУЕМЫЕ ПРИНЦИПЫ:
+// 1. Отсутствие циклических зависимостей (forward declaration + weak_ptr + отложенное определение)
+// 2. RAII (умные указатели)
+// 3. Инкапсуляция
+// 4. Порядок компиляции: методы, использующие Group, определены ПОСЛЕ определения Group
+// ============================================================================
+
 #include <iostream>
+#include <memory>
+#include <unordered_map>
 #include <string>
-#include <map>
 #include <vector>
-#include <sstream>
-#include <iomanip>
 #include <algorithm>
 
-// ---------- Классы без циклических зависимостей ----------
+// Forward declaration (нужен только для объявления указателя/ссылки)
+class Group;
+
+// ============================================================================
+// ОБЪЯВЛЕНИЕ класса User (только заголовки методов)
+// ============================================================================
 class User {
-public:
-    User(int id, std::string name, std::string additional)
-        : id_(id), name_(std::move(name)), additional_(std::move(additional)), groupId_(-1) {}
-
-    int getId() const { return id_; }
-    const std::string& getName() const { return name_; }
-    const std::string& getAdditional() const { return additional_; }
-    int getGroupId() const { return groupId_; }
-
-    void setGroupId(int gid) { groupId_ = gid; }
-
 private:
-    int id_;
-    std::string name_;
-    std::string additional_;
-    int groupId_;   // -1 означает "не состоит в группе"
+    int id;
+    std::string name;
+    std::string email;
+    std::weak_ptr<Group> group_weak;  // weak_ptr разрывает цикл
+
+public:
+    User(int uid, const std::string& uname, const std::string& uemail = "")
+        : id(uid), name(uname), email(uemail) {}
+
+    int getId() const { return id; }
+    std::string getName() const { return name; }
+    std::string getEmail() const { return email; }
+
+    void setGroup(std::shared_ptr<Group> grp);
+    std::shared_ptr<Group> getGroup() const;
+
+    // Только ОБЪЯВЛЕНИЕ. Определение будет ПОСЛЕ класса Group.
+    void printInfo() const;
 };
 
+// ============================================================================
+// ОПРЕДЕЛЕНИЕ класса Group
+// ============================================================================
 class Group {
-public:
-    explicit Group(int id) : id_(id) {}
-
-    int getId() const { return id_; }
-    const std::vector<int>& getUserIds() const { return userIds_; }
-
-    void addUser(int uid) {
-        if (std::find(userIds_.begin(), userIds_.end(), uid) == userIds_.end())
-            userIds_.push_back(uid);
-    }
-
-    void removeUser(int uid) {
-        auto it = std::find(userIds_.begin(), userIds_.end(), uid);
-        if (it != userIds_.end())
-            userIds_.erase(it);
-    }
-
 private:
-    int id_;
-    std::vector<int> userIds_;
-};
+    int id;
+    std::vector<int> userIds;
 
-// ---------- Глобальное хранилище (можно обернуть в класс, но для простоты -- так) ----------
-std::map<int, User> users;
-std::map<int, Group> groups;
+public:
+    Group(int gid) : id(gid) {}
 
-// ---------- Вспомогательные функции вывода ----------
-void printUser(const User& u) {
-    std::cout << "User: id=" << u.getId()
-              << ", name=" << u.getName()
-              << ", additional=" << u.getAdditional();
-    if (u.getGroupId() != -1)
-        std::cout << ", groupId=" << u.getGroupId();
-    else
-        std::cout << ", group=none";
-    std::cout << std::endl;
-}
+    int getId() const { return id; }
 
-void printGroup(const Group& g) {
-    std::cout << "Group: id=" << g.getId() << ", members: ";
-    const auto& memberIds = g.getUserIds();
-    if (memberIds.empty()) {
-        std::cout << "none";
-    } else {
-        for (size_t i = 0; i < memberIds.size(); ++i) {
-            int uid = memberIds[i];
-            auto it = users.find(uid);
-            std::cout << uid << "(" << (it != users.end() ? it->second.getName() : "?") << ")";
-            if (i + 1 < memberIds.size()) std::cout << ", ";
+    void addUser(int userId) {
+        if (std::find(userIds.begin(), userIds.end(), userId) == userIds.end()) {
+            userIds.push_back(userId);
         }
     }
-    std::cout << std::endl;
+
+    void removeUser(int userId) {
+        auto it = std::find(userIds.begin(), userIds.end(), userId);
+        if (it != userIds.end()) userIds.erase(it);
+    }
+
+    const std::vector<int>& getUserIds() const { return userIds; }
+
+    // Вывод информации о группе (требует доступа к хранилищу пользователей)
+    void printInfo(const std::unordered_map<int, std::shared_ptr<User>>& userStore) const;
+
+    void printInfoShort() const {
+        std::cout << "Group{id=" << id << ", user_count=" << userIds.size() << "}" << std::endl;
+    }
+};
+
+// ============================================================================
+// ОПРЕДЕЛЕНИЯ методов User (теперь класс Group полностью известен)
+// ============================================================================
+
+void User::setGroup(std::shared_ptr<Group> grp) {
+    group_weak = grp;
 }
 
-// ---------- Команды ----------
-void createUser(int id, const std::string& name, const std::string& additional) {
-    if (users.count(id)) {
-        std::cerr << "Error: user with id " << id << " already exists" << std::endl;
-        return;
-    }
-    users.emplace(id, User(id, name, additional));
-    std::cout << "User created." << std::endl;
+std::shared_ptr<Group> User::getGroup() const {
+    return group_weak.lock();  // lock() возвращает shared_ptr, если объект ещё жив
 }
 
-void deleteUser(int id) {
-    auto it = users.find(id);
-    if (it == users.end()) {
-        std::cerr << "Error: user " << id << " not found" << std::endl;
-        return;
+void User::printInfo() const {
+    std::cout << "User{id=" << id << ", name='" << name
+              << "', email='" << email << "'";
+    auto grp = getGroup();
+    if (grp) {
+        // Теперь компилятор знает, что такое Group и его метод getId()
+        std::cout << ", group_id=" << grp->getId();
+    } else {
+        std::cout << ", group=null";
     }
-    int groupId = it->second.getGroupId();
-    if (groupId != -1) {
-        auto git = groups.find(groupId);
-        if (git != groups.end())
-            git->second.removeUser(id);
-    }
-    users.erase(it);
-    std::cout << "User deleted." << std::endl;
+    std::cout << "}" << std::endl;
 }
 
-void allUsers() {
-    if (users.empty()) {
-        std::cout << "No users." << std::endl;
-        return;
+// ============================================================================
+// ОПРЕДЕЛЕНИЯ методов Group (требуют доступа к User)
+// ============================================================================
+
+void Group::printInfo(const std::unordered_map<int, std::shared_ptr<User>>& userStore) const {
+    std::cout << "Group{id=" << id << ", users=[" << std::endl;
+    for (int uid : userIds) {
+        auto it = userStore.find(uid);
+        if (it != userStore.end() && it->second) {
+            std::cout << "    ";
+            it->second->printInfo();  // Здесь используется метод User::printInfo()
+        } else {
+            std::cout << "    [deleted user " << uid << "]" << std::endl;
+        }
     }
-    for (const auto& [id, user] : users)
-        printUser(user);
+    std::cout << "]}" << std::endl;
 }
 
-void getUser(int id) {
-    auto it = users.find(id);
-    if (it == users.end()) {
-        std::cerr << "Error: user " << id << " not found" << std::endl;
-        return;
-    }
-    printUser(it->second);
-}
+// ============================================================================
+// МЕНЕДЖЕР (хранилище) — практически без изменений
+// ============================================================================
+class UserGroupManager {
+private:
+    std::unordered_map<int, std::shared_ptr<User>> users;
+    std::unordered_map<int, std::shared_ptr<Group>> groups;
 
-void createGroup(int id) {
-    if (groups.count(id)) {
-        std::cerr << "Error: group with id " << id << " already exists" << std::endl;
-        return;
+public:
+    void createUser(int userId, const std::string& username, const std::string& email = "") {
+        if (users.find(userId) != users.end()) {
+            std::cout << "Error: User " << userId << " already exists!" << std::endl;
+            return;
+        }
+        users[userId] = std::make_shared<User>(userId, username, email);
+        std::cout << "User " << userId << " created." << std::endl;
     }
-    groups.emplace(id, Group(id));
-    std::cout << "Group created." << std::endl;
-}
 
-void deleteGroup(int id) {
-    auto it = groups.find(id);
-    if (it == groups.end()) {
-        std::cerr << "Error: group " << id << " not found" << std::endl;
-        return;
+    void deleteUser(int userId) {
+        auto it = users.find(userId);
+        if (it == users.end()) {
+            std::cout << "Error: User " << userId << " not found!" << std::endl;
+            return;
+        }
+        for (auto& [gid, grp] : groups) {
+            grp->removeUser(userId);
+        }
+        users.erase(it);
+        std::cout << "User " << userId << " deleted." << std::endl;
     }
-    // У всех пользователей, состоявших в этой группе, сбрасываем groupId
-    for (int uid : it->second.getUserIds()) {
-        auto uit = users.find(uid);
-        if (uit != users.end())
-            uit->second.setGroupId(-1);
-    }
-    groups.erase(it);
-    std::cout << "Group deleted." << std::endl;
-}
 
-void allGroups() {
-    if (groups.empty()) {
-        std::cout << "No groups." << std::endl;
-        return;
+    void allUsers() const {
+        std::cout << "=== All Users ===" << std::endl;
+        for (const auto& [id, user] : users) {
+            user->printInfo();
+        }
     }
-    for (const auto& [id, group] : groups)
-        printGroup(group);
-}
 
-void getGroup(int id) {
-    auto it = groups.find(id);
-    if (it == groups.end()) {
-        std::cerr << "Error: group " << id << " not found" << std::endl;
-        return;
+    void getUser(int userId) const {
+        auto it = users.find(userId);
+        if (it == users.end()) {
+            std::cout << "User " << userId << " not found!" << std::endl;
+            return;
+        }
+        it->second->printInfo();
     }
-    printGroup(it->second);
-}
 
-// ---------- Главный цикл обработки команд ----------
+    void createGroup(int groupId) {
+        if (groups.find(groupId) != groups.end()) {
+            std::cout << "Error: Group " << groupId << " already exists!" << std::endl;
+            return;
+        }
+        groups[groupId] = std::make_shared<Group>(groupId);
+        std::cout << "Group " << groupId << " created." << std::endl;
+    }
+
+    void deleteGroup(int groupId) {
+        auto it = groups.find(groupId);
+        if (it == groups.end()) {
+            std::cout << "Error: Group " << groupId << " not found!" << std::endl;
+            return;
+        }
+        for (auto& [uid, user] : users) {
+            auto userGroup = user->getGroup();
+            if (userGroup && userGroup->getId() == groupId) {
+                user->setGroup(nullptr);
+            }
+        }
+        groups.erase(it);
+        std::cout << "Group " << groupId << " deleted." << std::endl;
+    }
+
+    void allGroups() const {
+        std::cout << "=== All Groups ===" << std::endl;
+        for (const auto& [id, grp] : groups) {
+            grp->printInfo(users);
+        }
+    }
+
+    void getGroup(int groupId) const {
+        auto it = groups.find(groupId);
+        if (it == groups.end()) {
+            std::cout << "Group " << groupId << " not found!" << std::endl;
+            return;
+        }
+        it->second->printInfo(users);
+    }
+
+    void addUserToGroup(int userId, int groupId) {
+        auto userIt = users.find(userId);
+        auto groupIt = groups.find(groupId);
+
+        if (userIt == users.end()) {
+            std::cout << "User " << userId << " not found!" << std::endl;
+            return;
+        }
+        if (groupIt == groups.end()) {
+            std::cout << "Group " << groupId << " not found!" << std::endl;
+            return;
+        }
+
+        userIt->second->setGroup(groupIt->second);
+        groupIt->second->addUser(userId);
+        std::cout << "User " << userId << " added to group " << groupId << std::endl;
+    }
+};
+
+// ============================================================================
+// ТОЧКА ВХОДА
+// ============================================================================
 int main() {
-    std::string line;
-    std::cout << "User/Group Manager. Commands:\n"
-                 "  createUser <id> <name> [additional...]\n"
-                 "  deleteUser <id>\n"
-                 "  allUsers\n"
-                 "  getUser <id>\n"
-                 "  createGroup <id>\n"
-                 "  deleteGroup <id>\n"
-                 "  allGroups\n"
-                 "  getGroup <id>\n"
-                 "  exit\n";
+    UserGroupManager manager;
+    std::string command;
+
+    std::cout << "User/Group Management System. Commands:" << std::endl;
+    std::cout << "  createUser <id> <name> [email]" << std::endl;
+    std::cout << "  deleteUser <id>" << std::endl;
+    std::cout << "  allUsers" << std::endl;
+    std::cout << "  getUser <id>" << std::endl;
+    std::cout << "  createGroup <id>" << std::endl;
+    std::cout << "  deleteGroup <id>" << std::endl;
+    std::cout << "  allGroups" << std::endl;
+    std::cout << "  getGroup <id>" << std::endl;
+    std::cout << "  addToGroup <userId> <groupId>" << std::endl;
+    std::cout << "  quit" << std::endl;
+
     while (true) {
         std::cout << "> ";
-        if (!std::getline(std::cin, line))
+        std::cin >> command;
+
+        if (command == "createUser") {
+            int id; std::string name, email;
+            std::cin >> id >> name;
+            if (std::cin.peek() != '\n') std::cin >> email;
+            manager.createUser(id, name, email);
+        }
+        else if (command == "deleteUser") {
+            int id; std::cin >> id;
+            manager.deleteUser(id);
+        }
+        else if (command == "allUsers") {
+            manager.allUsers();
+        }
+        else if (command == "getUser") {
+            int id; std::cin >> id;
+            manager.getUser(id);
+        }
+        else if (command == "createGroup") {
+            int id; std::cin >> id;
+            manager.createGroup(id);
+        }
+        else if (command == "deleteGroup") {
+            int id; std::cin >> id;
+            manager.deleteGroup(id);
+        }
+        else if (command == "allGroups") {
+            manager.allGroups();
+        }
+        else if (command == "getGroup") {
+            int id; std::cin >> id;
+            manager.getGroup(id);
+        }
+        else if (command == "addToGroup") {
+            int uid, gid; std::cin >> uid >> gid;
+            manager.addUserToGroup(uid, gid);
+        }
+        else if (command == "quit" || command == "exit") {
             break;
-        if (line.empty()) continue;
-
-        std::istringstream iss(line);
-        std::string cmd;
-        iss >> cmd;
-
-        if (cmd == "exit") break;
-
-        else if (cmd == "createUser") {
-            int id; std::string name, additional;
-            if (!(iss >> id >> name)) {
-                std::cerr << "Usage: createUser <id> <name> [additional...]" << std::endl;
-                continue;
-            }
-            std::getline(iss, additional);
-            // убираем ведущий пробел
-            if (!additional.empty() && additional[0] == ' ')
-                additional.erase(0, 1);
-            createUser(id, name, additional);
-        }
-        else if (cmd == "deleteUser") {
-            int id;
-            if (!(iss >> id)) {
-                std::cerr << "Usage: deleteUser <id>" << std::endl;
-                continue;
-            }
-            deleteUser(id);
-        }
-        else if (cmd == "allUsers") {
-            allUsers();
-        }
-        else if (cmd == "getUser") {
-            int id;
-            if (!(iss >> id)) {
-                std::cerr << "Usage: getUser <id>" << std::endl;
-                continue;
-            }
-            getUser(id);
-        }
-        else if (cmd == "createGroup") {
-            int id;
-            if (!(iss >> id)) {
-                std::cerr << "Usage: createGroup <id>" << std::endl;
-                continue;
-            }
-            createGroup(id);
-        }
-        else if (cmd == "deleteGroup") {
-            int id;
-            if (!(iss >> id)) {
-                std::cerr << "Usage: deleteGroup <id>" << std::endl;
-                continue;
-            }
-            deleteGroup(id);
-        }
-        else if (cmd == "allGroups") {
-            allGroups();
-        }
-        else if (cmd == "getGroup") {
-            int id;
-            if (!(iss >> id)) {
-                std::cerr << "Usage: getGroup <id>" << std::endl;
-                continue;
-            }
-            getGroup(id);
         }
         else {
-            std::cerr << "Unknown command: " << cmd << std::endl;
+            std::cout << "Unknown command!" << std::endl;
         }
     }
     return 0;
