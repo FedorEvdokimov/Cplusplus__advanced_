@@ -1,52 +1,66 @@
 #include <iostream>
 #include <cassert>
 
-// Пространство имён для всех mixin-классов
-namespace mixins {
-
-    // 1) less_than_comparable: добавляет операторы сравнения, используя CRTP
-    template<typename T>
-    class less_than_comparable {
-    public:
-        // Все операторы выражаются через operator<, который должен быть определён в T
-        friend bool operator>(const T& a, const T& b) { return b < a; }
-        friend bool operator<=(const T& a, const T& b) { return !(b < a); }
-        friend bool operator>=(const T& a, const T& b) { return !(a < b); }
-        friend bool operator==(const T& a, const T& b) { return !(a < b) && !(b < a); }
-        friend bool operator!=(const T& a, const T& b) { return !(a == b); }
-    };
-
-    // 2) counter: подсчёт количества живых объектов
-    template<typename T>
-    class counter {
-    private:
-        // static inline (C++17) – одна переменная на все экземпляры T
-        static inline std::size_t count_ = 0;
-
-    protected:
-        // Конструкторы увеличивают счётчик (по умолчанию, копирования, перемещения)
-        counter() { ++count_; }
-        counter(const counter&) { ++count_; }
-        counter(counter&&) noexcept { ++count_; }
-
-        // Деструктор уменьшает счётчик
-        ~counter() { --count_; }
-
-    public:
-        static std::size_t count() { return count_; }
-    };
-
-} // namespace mixins
-
-// Пример использования: класс Number, наследующий оба mixin'а
-class Number : public mixins::less_than_comparable<Number>,
-               public mixins::counter<Number> {
+// ==============================
+// MixIn: less_than_comparable
+// ==============================
+template<typename Derived>
+class less_than_comparable {
 public:
-    explicit Number(int value) : m_value{value} {}
+    friend bool operator>(const Derived& lhs, const Derived& rhs) {
+        return rhs < lhs;
+    }
+    friend bool operator<=(const Derived& lhs, const Derived& rhs) {
+        return !(rhs < lhs);
+    }
+    friend bool operator>=(const Derived& lhs, const Derived& rhs) {
+        return !(lhs < rhs);
+    }
+    friend bool operator==(const Derived& lhs, const Derived& rhs) {
+        return !(lhs < rhs) && !(rhs < lhs);
+    }
+    friend bool operator!=(const Derived& lhs, const Derived& rhs) {
+        return !(lhs == rhs);
+    }
+};
+
+// ==============================
+// MixIn: counter (counts live instances)
+// ==============================
+template<typename Derived>
+class counter {
+private:
+    static inline int live_count = 0;
+
+protected:
+    counter() {
+        ++live_count;
+    }
+    counter(const counter&) {
+        ++live_count;
+    }
+    counter(counter&&) noexcept {
+        ++live_count;
+    }
+    ~counter() {
+        --live_count;
+    }
+
+public:
+    static int count() {
+        return live_count;
+    }
+};
+
+// ==============================
+// Example usage
+// ==============================
+class Number : public less_than_comparable<Number>, public counter<Number> {
+public:
+    Number(int value) : m_value(value) {}
 
     int value() const { return m_value; }
 
-    // Единственный оператор, который нужно реализовать вручную
     bool operator<(const Number& other) const {
         return m_value < other.m_value;
     }
@@ -61,15 +75,13 @@ int main() {
     Number three{3};
     Number four{4};
 
-    // Все операторы сравнения работают автоматически
-    assert(one >= one);   // true
-    assert(three <= four); // true
-    assert(two == two);    // true
-    assert(three > two);   // true
-    assert(one < two);     // true
+    assert(one >= one);
+    assert(three <= four);
+    assert(two == two);
+    assert(three > two);
+    assert(one < two);
 
-    // Подсчёт текущего количества объектов Number
-    std::cout << "Count: " << mixins::counter<Number>::count() << std::endl;
+    std::cout << "Count: " << counter<Number>::count() << std::endl; // Output: 4
 
     return 0;
 }
