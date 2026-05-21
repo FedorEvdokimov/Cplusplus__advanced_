@@ -1,161 +1,209 @@
 #include <iostream>
-#include <memory>
-#include <unordered_set>
 #include <vector>
+#include <unordered_set>
 #include <algorithm>
+#include <memory>
+#include <initializer_list>
 
-// ---------- Абстрактная реализация ----------
+// ==================================================================
+// Паттерн Bridge: реализация множества с переключением структур
+// ==================================================================
+
+// ---------------------- Абстрактная реализация (Implementor) -----
 class SetImpl {
 public:
     virtual ~SetImpl() = default;
     virtual void add(int elem) = 0;
     virtual void remove(int elem) = 0;
     virtual bool contains(int elem) const = 0;
+    virtual std::vector<int> getElements() const = 0;
     virtual size_t size() const = 0;
-    virtual std::vector<int> getAllElements() const = 0; // для копирования при смене реализации
+    virtual std::unique_ptr<SetImpl> clone() const = 0;
 };
 
-// ---------- Конкретная реализация 1: массив (для малых размеров) ----------
+// ---------------------- Конкретная реализация: массив (для малых множеств) ---
 class ArraySetImpl : public SetImpl {
-private:
-    static constexpr size_t MAX_SIZE = 20;   // максимальный размер для этой реализации
-    std::vector<int> data_;                  // линейное хранение
+    std::vector<int> data;
 public:
+    ArraySetImpl() = default;
+    ArraySetImpl(const ArraySetImpl& other) : data(other.data) {}
     void add(int elem) override {
-        if (contains(elem)) return;
-        if (data_.size() < MAX_SIZE)
-            data_.push_back(elem);
-        else
-            throw std::runtime_error("ArraySetImpl overflow: too many elements");
+        if (!contains(elem)) {
+            data.push_back(elem);
+        }
     }
     void remove(int elem) override {
-        auto it = std::find(data_.begin(), data_.end(), elem);
-        if (it != data_.end())
-            data_.erase(it);
+        auto it = std::find(data.begin(), data.end(), elem);
+        if (it != data.end()) data.erase(it);
     }
     bool contains(int elem) const override {
-        return std::find(data_.begin(), data_.end(), elem) != data_.end();
+        return std::find(data.begin(), data.end(), elem) != data.end();
     }
-    size_t size() const override { return data_.size(); }
-    std::vector<int> getAllElements() const override { return data_; }
+    std::vector<int> getElements() const override {
+        return data;
+    }
+    size_t size() const override {
+        return data.size();
+    }
+    std::unique_ptr<SetImpl> clone() const override {
+        return std::make_unique<ArraySetImpl>(*this);
+    }
 };
 
-// ---------- Конкретная реализация 2: хэш-таблица (для больших размеров) ----------
+// ---------------------- Конкретная реализация: хеш-таблица (для больших множеств) -
 class HashSetImpl : public SetImpl {
-private:
-    std::unordered_set<int> data_;
+    std::unordered_set<int> data;
 public:
-    void add(int elem) override { data_.insert(elem); }
-    void remove(int elem) override { data_.erase(elem); }
-    bool contains(int elem) const override { return data_.find(elem) != data_.end(); }
-    size_t size() const override { return data_.size(); }
-    std::vector<int> getAllElements() const override {
-        return std::vector<int>(data_.begin(), data_.end());
+    HashSetImpl() = default;
+    HashSetImpl(const HashSetImpl& other) : data(other.data) {}
+    void add(int elem) override {
+        data.insert(elem);
+    }
+    void remove(int elem) override {
+        data.erase(elem);
+    }
+    bool contains(int elem) const override {
+        return data.find(elem) != data.end();
+    }
+    std::vector<int> getElements() const override {
+        return std::vector<int>(data.begin(), data.end());
+    }
+    size_t size() const override {
+        return data.size();
+    }
+    std::unique_ptr<SetImpl> clone() const override {
+        return std::make_unique<HashSetImpl>(*this);
     }
 };
 
-// ---------- Абстракция: Множество (Bridge) ----------
+// ---------------------- Абстракция (Bridge) -------------------------
 class Set {
-private:
-    static constexpr size_t THRESHOLD = 20;   // порог переключения
-    std::unique_ptr<SetImpl> impl_;
+    std::unique_ptr<SetImpl> impl;
+    static constexpr size_t THRESHOLD = 10;   // переключаемся при 10 элементах
 
-    // Вспомогательный метод для смены реализации с сохранением всех элементов
-    void switchImplementation(std::unique_ptr<SetImpl> newImpl) {
-        auto oldElements = impl_->getAllElements();
-        for (int elem : oldElements)
-            newImpl->add(elem);
-        impl_ = std::move(newImpl);
+    void checkAndSwitch() {
+        size_t sz = impl->size();
+        if (sz < THRESHOLD) {
+            // нужно переключиться на ArraySetImpl, если ещё не он
+            if (dynamic_cast<HashSetImpl*>(impl.get()) != nullptr) {
+                // был хеш, становися массивом
+                auto elements = impl->getElements();
+                auto newImpl = std::make_unique<ArraySetImpl>();
+                for (int e : elements) newImpl->add(e);
+                impl = std::move(newImpl);
+            }
+        } else {
+            // нужно переключиться на HashSetImpl, если ещё не он
+            if (dynamic_cast<ArraySetImpl*>(impl.get()) != nullptr) {
+                auto elements = impl->getElements();
+                auto newImpl = std::make_unique<HashSetImpl>();
+                for (int e : elements) newImpl->add(e);
+                impl = std::move(newImpl);
+            }
+        }
     }
 
 public:
-    // Начальная реализация — массив
-    Set() : impl_(std::make_unique<ArraySetImpl>()) {}
+    Set() : impl(std::make_unique<ArraySetImpl>()) {}
+    Set(const Set& other) : impl(other.impl->clone()) {}
+    Set(Set&&) = default;
+    Set& operator=(const Set& other) {
+        if (this != &other) impl = other.impl->clone();
+        return *this;
+    }
+    Set& operator=(Set&&) = default;
 
     void add(int elem) {
-        impl_->add(elem);
-        // Если превысили порог и текущая реализация — не хэш-таблица, переключаем
-        if (impl_->size() > THRESHOLD && dynamic_cast<HashSetImpl*>(impl_.get()) == nullptr) {
-            switchImplementation(std::make_unique<HashSetImpl>());
-        }
+        impl->add(elem);
+        checkAndSwitch();
     }
-
     void remove(int elem) {
-        impl_->remove(elem);
-        // Если размер стал не больше порога и текущая реализация — хэш-таблица, переключаем обратно
-        if (impl_->size() <= THRESHOLD && dynamic_cast<ArraySetImpl*>(impl_.get()) == nullptr) {
-            switchImplementation(std::make_unique<ArraySetImpl>());
-        }
+        impl->remove(elem);
+        checkAndSwitch();
     }
-
     bool contains(int elem) const {
-        return impl_->contains(elem);
+        return impl->contains(elem);
     }
-
     size_t size() const {
-        return impl_->size();
+        return impl->size();
+    }
+    std::vector<int> getElements() const {
+        return impl->getElements();
     }
 
     // Объединение множеств
-    Set unionSet(const Set& other) const {
+    Set unionWith(const Set& other) const {
         Set result;
-        for (int e : impl_->getAllElements()) result.add(e);
-        for (int e : other.impl_->getAllElements()) result.add(e);
+        // добавляем элементы из текущего
+        for (int e : this->getElements()) result.add(e);
+        // добавляем элементы из другого
+        for (int e : other.getElements()) result.add(e);
         return result;
     }
 
     // Пересечение множеств
-    Set intersection(const Set& other) const {
+    Set intersectWith(const Set& other) const {
         Set result;
-        for (int e : impl_->getAllElements()) {
-            if (other.contains(e))
-                result.add(e);
+        for (int e : this->getElements()) {
+            if (other.contains(e)) result.add(e);
         }
         return result;
     }
 
-    // Для отладки: вывести все элементы
+    // Вывод на печать (для демонстрации)
     void print() const {
-        auto elems = impl_->getAllElements();
         std::cout << "{ ";
-        for (int e : elems) std::cout << e << " ";
-        std::cout << "}  (size=" << size() << ", impl="
-                  << (dynamic_cast<ArraySetImpl*>(impl_.get()) ? "Array" : "HashSet") << ")\n";
+        for (int e : getElements()) std::cout << e << " ";
+        std::cout << "}";
     }
 };
 
-// ---------- Пример использования ----------
+// ==================================================================
+// Тестирование
+// ==================================================================
 int main() {
-    Set s;
-    std::cout << "Initial: ";
-    s.print();
+    Set a;
+    for (int i = 1; i <= 15; ++i) {
+        a.add(i);
+    }
+    std::cout << "Set a (15 elements): ";
+    a.print();
+    std::cout << ", size = " << a.size() << "\n";
 
-    // Добавляем 25 элементов, должно переключиться на HashSetImpl
-    for (int i = 1; i <= 25; ++i)
-        s.add(i);
-    std::cout << "After adding 25 elements: ";
-    s.print();
+    Set b;
+    for (int i = 10; i <= 20; ++i) {
+        b.add(i);
+    }
+    std::cout << "Set b (11 elements): ";
+    b.print();
+    std::cout << ", size = " << b.size() << "\n";
 
-    // Удаляем первые 10, размер 15 — должно вернуться на ArraySetImpl
-    for (int i = 1; i <= 10; ++i)
-        s.remove(i);
-    std::cout << "After removing 10 elements: ";
-    s.print();
+    Set c = a.unionWith(b);
+    std::cout << "Union a ∪ b: ";
+    c.print();
+    std::cout << ", size = " << c.size() << "\n";
 
-    Set t;
-    t.add(10);
-    t.add(20);
-    t.add(30);
-    std::cout << "Set t: ";
-    t.print();
+    Set d = a.intersectWith(b);
+    std::cout << "Intersection a ∩ b: ";
+    d.print();
+    std::cout << ", size = " << d.size() << "\n";
 
-    Set u = s.unionSet(t);
-    std::cout << "Union s ∪ t: ";
-    u.print();
+    // Проверка переключения: добавим много элементов в маленькое множество
+    Set small;
+    for (int i = 1; i <= 5; ++i) small.add(i);
+    std::cout << "\nSmall set (5 elements): ";
+    small.print();
+    std::cout << " (should be ArraySetImpl)\n";
+    for (int i = 6; i <= 12; ++i) small.add(i);
+    std::cout << "After adding up to 12 elements: ";
+    small.print();
+    std::cout << " (now should be HashSetImpl)\n";
 
-    Set i = s.intersection(t);
-    std::cout << "Intersection s ∩ t: ";
-    i.print();
+    // Удаляем, чтобы снова стал маленьким
+    for (int i = 10; i <= 12; ++i) small.remove(i);
+    std::cout << "After removing 10-12: ";
+    small.print();
+    std::cout << " (should switch back to ArraySetImpl)\n";
 
     return 0;
 }
