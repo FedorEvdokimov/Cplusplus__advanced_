@@ -1,128 +1,236 @@
 #include <iostream>
 #include <vector>
+#include <memory>
 #include <string>
 #include <sstream>
 #include <iomanip>
-#include <memory>
+#include <cmath>
+#include <limits>
 
-// ---------- Модель данных ----------
-enum class CPType { Mandatory, Optional };
+// ==================================================================
+// Классы контрольных пунктов
+// ==================================================================
 
+// Базовый класс для всех КП
 class ControlPoint {
+protected:
+    std::string name;
+    double latitude;   // широта: -90..90
+    double longitude;  // долгота: -180..180
 public:
-    ControlPoint(std::string name, double lat, double lon)
-        : name_(std::move(name)), latitude_(lat), longitude_(lon) {}
+    ControlPoint(const std::string& n, double lat, double lon)
+        : name(n), latitude(lat), longitude(lon) {
+        // Валидация координат
+        if (lat < -90.0 || lat > 90.0)
+            throw std::out_of_range("Latitude must be in [-90, 90]");
+        if (lon < -180.0 || lon > 180.0)
+            throw std::out_of_range("Longitude must be in [-180, 180]");
+    }
     virtual ~ControlPoint() = default;
 
-    const std::string& getName() const { return name_; }
-    double getLatitude() const { return latitude_; }
-    double getLongitude() const { return longitude_; }
-    virtual CPType getType() const = 0;
-    virtual double getPenalty() const { return 0.0; } // для обязательных - 0
+    const std::string& getName() const { return name; }
+    double getLatitude() const { return latitude; }
+    double getLongitude() const { return longitude; }
 
-private:
-    std::string name_;
-    double latitude_;
-    double longitude_;
+    // Чисто виртуальные методы для посещения (Visitor-like для Builder)
+    virtual void accept(class Builder& builder) const = 0;
 };
 
+// Обязательный КП
 class MandatoryCP : public ControlPoint {
 public:
-    MandatoryCP(std::string name, double lat, double lon)
-        : ControlPoint(std::move(name), lat, lon) {}
-    CPType getType() const override { return CPType::Mandatory; }
+    MandatoryCP(const std::string& name, double lat, double lon)
+        : ControlPoint(name, lat, lon) {}
+    void accept(Builder& builder) const override;
 };
 
+// Необязательный КП (со штрафом)
 class OptionalCP : public ControlPoint {
+    double penalty; // штраф в часах
 public:
-    OptionalCP(std::string name, double lat, double lon, double penalty)
-        : ControlPoint(std::move(name), lat, lon), penalty_(penalty) {}
-    CPType getType() const override { return CPType::Optional; }
-    double getPenalty() const override { return penalty_; }
-
-private:
-    double penalty_;
+    OptionalCP(const std::string& name, double lat, double lon, double p)
+        : ControlPoint(name, lat, lon), penalty(p) {
+        if (p < 0) throw std::out_of_range("Penalty cannot be negative");
+    }
+    double getPenalty() const { return penalty; }
+    void accept(Builder& builder) const override;
 };
 
-// ---------- Builder (абстрактный) ----------
-class CPPointBuilder {
+// ==================================================================
+// Абстрактный Builder
+// ==================================================================
+class Builder {
 public:
-    virtual ~CPPointBuilder() = default;
-    virtual void addMandatory(int index, const MandatoryCP& cp) = 0;
-    virtual void addOptional(int index, const OptionalCP& cp) = 0;
-    virtual std::string getResult() = 0; // результат в виде строки
+    virtual ~Builder() = default;
+    virtual void buildHeader() = 0;
+    virtual void buildFooter() = 0;
+    virtual void buildMandatoryCP(int index, const MandatoryCP& cp) = 0;
+    virtual void buildOptionalCP(int index, const OptionalCP& cp) = 0;
+    virtual void getResult() = 0;
 };
 
-// ---------- ConcreteBuilder 1: текстовый вывод ----------
-class TextOutputBuilder : public CPPointBuilder {
-    std::ostringstream output;
+// ==================================================================
+// ConcreteBuilder для текстового вывода (на английском)
+// ==================================================================
+class TextBuilder : public Builder {
+    std::ostringstream oss;
 public:
-    void addMandatory(int index, const MandatoryCP& cp) override {
-        output << index << ". " << cp.getName() << "; "
-               << std::fixed << std::setprecision(6)
-               << cp.getLatitude() << ", " << cp.getLongitude()
-               << "; незачёт СУ\n";
+    void buildHeader() override {
+        oss << "List of Checkpoints:\n";
+        oss << "------------------------------------------------------------\n";
+        oss << std::left << std::setw(5) << "No"
+            << std::setw(15) << "Name"
+            << std::setw(15) << "Latitude"
+            << std::setw(15) << "Longitude"
+            << std::setw(15) << "Penalty/Fail\n";
+        oss << "------------------------------------------------------------\n";
     }
-
-    void addOptional(int index, const OptionalCP& cp) override {
-        output << index << ". " << cp.getName() << "; "
-               << std::fixed << std::setprecision(6)
-               << cp.getLatitude() << ", " << cp.getLongitude()
-               << "; штраф " << cp.getPenalty() << " ч\n";
+    void buildFooter() override {
+        oss << "------------------------------------------------------------\n";
     }
-
-    std::string getResult() override {
-        return output.str();
+    void buildMandatoryCP(int index, const MandatoryCP& cp) override {
+        oss << std::left << std::setw(5) << index
+            << std::setw(15) << cp.getName()
+            << std::setw(15) << cp.getLatitude()
+            << std::setw(15) << cp.getLongitude()
+            << std::setw(15) << "FAIL\n";
+    }
+    void buildOptionalCP(int index, const OptionalCP& cp) override {
+        oss << std::left << std::setw(5) << index
+            << std::setw(15) << cp.getName()
+            << std::setw(15) << cp.getLatitude()
+            << std::setw(15) << cp.getLongitude()
+            << std::setw(15) << (std::to_string(cp.getPenalty()) + " h")
+            << "\n";
+    }
+    void getResult() override {
+        std::cout << oss.str();
     }
 };
 
-// ---------- ConcreteBuilder 2: подсчёт суммарного штрафа ----------
-class PenaltySumBuilder : public CPPointBuilder {
+// ==================================================================
+// ConcreteBuilder для подсчёта суммарного штрафа (вывод на английском)
+// ==================================================================
+class PenaltyBuilder : public Builder {
     double totalPenalty = 0.0;
 public:
-    void addMandatory(int, const MandatoryCP&) override {
-        // ничего не делаем
-    }
-    void addOptional(int, const OptionalCP& cp) override {
+    void buildHeader() override {}
+    void buildFooter() override {}
+    void buildMandatoryCP(int, const MandatoryCP&) override {}
+    void buildOptionalCP(int, const OptionalCP& cp) override {
         totalPenalty += cp.getPenalty();
     }
-    std::string getResult() override {
-        std::ostringstream oss;
-        oss << "Total penalty: " << totalPenalty << " hours";
-        return oss.str();
+    void getResult() override {
+        std::cout << "Total penalty for optional CPs: "
+                  << totalPenalty << " hours\n";
+    }
+    double getTotal() const { return totalPenalty; }
+};
+
+// ==================================================================
+// ConcreteBuilder для вывода в таблицу (имитация QTableView, на английском)
+// ==================================================================
+class TableBuilder : public Builder {
+    struct Row {
+        int index;
+        std::string name;
+        double lat, lon;
+        std::string penaltyStr;
+    };
+    std::vector<Row> rows;
+public:
+    void buildHeader() override { rows.clear(); }
+    void buildFooter() override {
+        std::cout << "\n=== Checkpoint Table (similar to QTableView) ===\n";
+        std::cout << std::left << std::setw(5) << "No"
+                  << std::setw(15) << "Name"
+                  << std::setw(15) << "Latitude"
+                  << std::setw(15) << "Longitude"
+                  << std::setw(15) << "Penalty/Fail\n";
+        std::cout << "------------------------------------------------------------\n";
+        for (const auto& row : rows) {
+            std::cout << std::left << std::setw(5) << row.index
+                      << std::setw(15) << row.name
+                      << std::setw(15) << row.lat
+                      << std::setw(15) << row.lon
+                      << std::setw(15) << row.penaltyStr << "\n";
+        }
+        std::cout << "------------------------------------------------------------\n";
+    }
+    void buildMandatoryCP(int index, const MandatoryCP& cp) override {
+        rows.push_back({index, cp.getName(), cp.getLatitude(), cp.getLongitude(), "FAIL"});
+    }
+    void buildOptionalCP(int index, const OptionalCP& cp) override {
+        rows.push_back({index, cp.getName(), cp.getLatitude(), cp.getLongitude(),
+                        std::to_string(cp.getPenalty()) + " h"});
+    }
+    void getResult() override {}
+};
+
+// ==================================================================
+// Реализация метода accept (после определения Builder)
+// ==================================================================
+void MandatoryCP::accept(Builder& builder) const {
+    // Для простоты индекс будет передан Director'ом
+}
+void OptionalCP::accept(Builder& builder) const {
+    // аналогично
+}
+
+// ==================================================================
+// Director (Управляет построением)
+// ==================================================================
+class RaceDirector {
+    std::vector<std::unique_ptr<ControlPoint>> checkpoints;
+public:
+    void addCP(std::unique_ptr<ControlPoint> cp) {
+        checkpoints.push_back(std::move(cp));
+    }
+
+    void construct(Builder& builder) {
+        builder.buildHeader();
+        int index = 1;
+        for (const auto& cp : checkpoints) {
+            if (auto* m = dynamic_cast<MandatoryCP*>(cp.get())) {
+                builder.buildMandatoryCP(index, *m);
+            } else if (auto* o = dynamic_cast<OptionalCP*>(cp.get())) {
+                builder.buildOptionalCP(index, *o);
+            }
+            ++index;
+        }
+        builder.buildFooter();
+        builder.getResult();
     }
 };
 
-// ---------- Функция обработки (Director) ----------
-std::string processControlPoints(const std::vector<std::unique_ptr<ControlPoint>>& points,
-                                 CPPointBuilder& builder) {
-    int idx = 1;
-    for (const auto& cp : points) {
-        if (cp->getType() == CPType::Mandatory) {
-            builder.addMandatory(idx, static_cast<const MandatoryCP&>(*cp));
-        } else {
-            builder.addOptional(idx, static_cast<const OptionalCP&>(*cp));
-        }
-        ++idx;
-    }
-    return builder.getResult();
-}
-
-// ---------- Пример использования ----------
+// ==================================================================
+// Пример использования
+// ==================================================================
 int main() {
-    std::vector<std::unique_ptr<ControlPoint>> route;
-    route.push_back(std::make_unique<MandatoryCP>("Start", 55.751244, 37.618423));
-    route.push_back(std::make_unique<OptionalCP>("Forest crossing", 55.812345, 37.700000, 1.5));
-    route.push_back(std::make_unique<MandatoryCP>("Lake", 55.870000, 37.650000));
-    route.push_back(std::make_unique<OptionalCP>("Mountain pass", 55.900000, 37.720000, 2.0));
+    try {
+        RaceDirector director;
 
-    TextOutputBuilder textBuilder;
-    std::string textReport = processControlPoints(route, textBuilder);
-    std::cout << "=== Text report ===\n" << textReport;
+        // Добавляем КП
+        director.addCP(std::make_unique<MandatoryCP>("Start", 55.0, 37.0));
+        director.addCP(std::make_unique<OptionalCP>("Forest", 55.2, 37.5, 2.5));
+        director.addCP(std::make_unique<MandatoryCP>("River", 55.4, 37.8));
+        director.addCP(std::make_unique<OptionalCP>("Mountain", 55.6, 38.0, 5.0));
+        director.addCP(std::make_unique<OptionalCP>("Finish", 55.8, 38.3, 0.0));
 
-    PenaltySumBuilder penaltyBuilder;
-    std::string penaltyReport = processControlPoints(route, penaltyBuilder);
-    std::cout << "=== Penalty report ===\n" << penaltyReport << std::endl;
+        // 1. Текстовый вывод
+        TextBuilder textBuilder;
+        director.construct(textBuilder);
 
+        // 2. Подсчёт суммарного штрафа
+        PenaltyBuilder penaltyBuilder;
+        director.construct(penaltyBuilder);
+
+        // 3. Вывод в виде таблицы
+        TableBuilder tableBuilder;
+        director.construct(tableBuilder);
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+    }
     return 0;
 }
