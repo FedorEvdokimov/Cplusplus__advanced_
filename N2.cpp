@@ -1,153 +1,245 @@
+#include <iostream>
 #include <type_traits>
-#include <cstddef>
+#include <string>
 
-namespace typelist {
+namespace type_list_impl {
 
-// Основной шаблон
+// ==============================
+// Main TypeList template
+// ==============================
 template<typename... Types>
 struct TypeList {};
 
-// ---------- Получение размера ----------
-template<typename> struct Size;
-template<typename... Types>
-struct Size<TypeList<Types...>> : std::integral_constant<std::size_t, sizeof...(Types)> {};
+// ==============================
+// 1. Get element by index
+// ==============================
+template<std::size_t Index, typename List>
+struct At;
 
-template<typename TList>
-inline constexpr std::size_t size_v = Size<TList>::value;
-
-// ---------- Получение элемента по индексу ----------
-template<std::size_t I, typename TList> struct At;
-
-// Базовый случай: список не пуст, I == 0 -> первый тип
 template<typename Head, typename... Tail>
 struct At<0, TypeList<Head, Tail...>> {
     using type = Head;
 };
 
-// Рекурсия: I > 0
-template<std::size_t I, typename Head, typename... Tail>
-struct At<I, TypeList<Head, Tail...>> : At<I-1, TypeList<Tail...>> {};
+template<std::size_t Index, typename Head, typename... Tail>
+struct At<Index, TypeList<Head, Tail...>> {
+    static_assert(Index < sizeof...(Tail) + 1, "TypeList::At: index out of range");
+    using type = typename At<Index - 1, TypeList<Tail...>>::type;
+};
 
-// Ошибка компиляции при выходе за границы (специализация для пустого списка)
-template<std::size_t I>
-struct At<I, TypeList<>>; // намеренно не определена
+template<std::size_t Index, typename List>
+using At_t = typename At<Index, List>::type;
 
-template<std::size_t I, typename TList>
-using at_t = typename At<I, TList>::type;
+// ==============================
+// 2. Get size of list
+// ==============================
+template<typename List>
+struct Size;
 
-// ---------- Проверка наличия типа ----------
-template<typename T, typename TList> struct Contains;
+template<typename... Types>
+struct Size<TypeList<Types...>> {
+    static constexpr std::size_t value = sizeof...(Types);
+};
+
+template<typename List>
+inline constexpr std::size_t Size_v = Size<List>::value;
+
+// ==============================
+// 3. Check if type exists in list
+// ==============================
+template<typename T, typename List>
+struct Contains;
 
 template<typename T>
-struct Contains<T, TypeList<>> : std::false_type {};
+struct Contains<T, TypeList<>> {
+    static constexpr bool value = false;
+};
 
 template<typename T, typename Head, typename... Tail>
-struct Contains<T, TypeList<Head, Tail...>>
-    : std::conditional_t<std::is_same_v<T, Head>,
-                         std::true_type,
-                         Contains<T, TypeList<Tail...>>> {};
+struct Contains<T, TypeList<Head, Tail...>> {
+    static constexpr bool value = std::is_same_v<T, Head> || Contains<T, TypeList<Tail...>>::value;
+};
 
-template<typename T, typename TList>
-inline constexpr bool contains_v = Contains<T, TList>::value;
+template<typename T, typename List>
+inline constexpr bool Contains_v = Contains<T, List>::value;
 
-// ---------- Получение индекса типа ----------
-template<typename T, typename TList> struct IndexOf;
+// ==============================
+// 4. Get index of type in list
+// ==============================
+template<typename T, typename List>
+struct IndexOfHelper;
+
+template<typename T, typename Head, typename... Tail>
+struct IndexOfHelper<T, TypeList<Head, Tail...>> {
+    static constexpr std::size_t value =
+        std::is_same_v<T, Head> ? 0 : 1 + IndexOfHelper<T, TypeList<Tail...>>::value;
+};
 
 template<typename T>
-struct IndexOf<T, TypeList<>>; // отсутствует -> ошибка компиляции
-
-template<typename T, typename Head, typename... Tail>
-struct IndexOf<T, TypeList<Head, Tail...>> {
-    static constexpr std::size_t value = []() {
-        if constexpr (std::is_same_v<T, Head>)
-            return 0;
-        else
-            return 1 + IndexOf<T, TypeList<Tail...>>::value;
-    }();
+struct IndexOfHelper<T, TypeList<>> {
+    static constexpr std::size_t value = 0;
 };
 
-template<typename T, typename TList>
-inline constexpr std::size_t index_of_v = IndexOf<T, TList>::value;
-
-// ---------- Добавление в конец ----------
-template<typename T, typename TList> struct PushBack;
-
-template<typename T, typename... Types>
-struct PushBack<T, TypeList<Types...>> {
-    using type = TypeList<Types..., T>;
+template<typename T, typename List>
+struct IndexOf {
+    static_assert(Contains_v<T, List>, "TypeList::IndexOf: type not found in list");
+    static constexpr std::size_t value = IndexOfHelper<T, List>::value;
 };
 
-template<typename T, typename TList>
-using push_back_t = typename PushBack<T, TList>::type;
+template<typename T, typename List>
+inline constexpr std::size_t IndexOf_v = IndexOf<T, List>::value;
 
-// ---------- Добавление в начало ----------
-template<typename T, typename TList> struct PushFront;
+// ==============================
+// 5. Add type to the end of list
+// ==============================
+template<typename NewType, typename List>
+struct Append;
 
-template<typename T, typename... Types>
-struct PushFront<T, TypeList<Types...>> {
-    using type = TypeList<T, Types...>;
+template<typename NewType, typename... Types>
+struct Append<NewType, TypeList<Types...>> {
+    using type = TypeList<Types..., NewType>;
 };
 
-template<typename T, typename TList>
-using push_front_t = typename PushFront<T, TList>::type;
+template<typename NewType, typename List>
+using Append_t = typename Append<NewType, List>::type;
 
-} // namespace typelist
+// ==============================
+// 6. Add type to the beginning of list
+// ==============================
+template<typename NewType, typename List>
+struct Prepend;
 
-// ---------- Тесты ----------
-using namespace typelist;
+template<typename NewType, typename... Types>
+struct Prepend<NewType, TypeList<Types...>> {
+    using type = TypeList<NewType, Types...>;
+};
 
-// 1. Создаём списки
-using Empty = TypeList<>;
-using Single = TypeList<int>;
-using ABC = TypeList<char, bool, double>;
+template<typename NewType, typename List>
+using Prepend_t = typename Prepend<NewType, List>::type;
 
-// 2. Размер
-static_assert(size_v<Empty> == 0);
-static_assert(size_v<Single> == 1);
-static_assert(size_v<ABC> == 3);
+// ==============================
+// Helper function to print type names
+// ==============================
+template<typename T>
+std::string type_name() {
+    if constexpr (std::is_same_v<T, int>) return "int";
+    else if constexpr (std::is_same_v<T, double>) return "double";
+    else if constexpr (std::is_same_v<T, char>) return "char";
+    else if constexpr (std::is_same_v<T, std::string>) return "string";
+    else if constexpr (std::is_same_v<T, float>) return "float";
+    else if constexpr (std::is_same_v<T, void>) return "void";
+    else if constexpr (std::is_same_v<T, bool>) return "bool";
+    else if constexpr (std::is_same_v<T, long>) return "long";
+    else return "unknown";
+}
 
-// 3. Доступ по индексу
-static_assert(std::is_same_v<at_t<0, ABC>, char>);
-static_assert(std::is_same_v<at_t<1, ABC>, bool>);
-static_assert(std::is_same_v<at_t<2, ABC>, double>);
-// Следующая строка выдаст ошибку компиляции (как и требуется):
-// static_assert(std::is_same_v<at_t<3, ABC>, void>); // не скомпилируется
+template<typename... Types>
+void print_list(TypeList<Types...>) {
+    std::cout << "TypeList<";
+    size_t count = 0;
+    ((std::cout << type_name<Types>() << (++count < sizeof...(Types) ? ", " : "")), ...);
+    std::cout << "> (size = " << sizeof...(Types) << ")\n";
+}
 
-// 4. Проверка наличия
-static_assert(contains_v<int, Single>);
-static_assert(!contains_v<float, Single>);
-static_assert(contains_v<char, ABC>);
-static_assert(contains_v<bool, ABC>);
-static_assert(contains_v<double, ABC>);
-static_assert(!contains_v<int, ABC>);
+} // namespace type_list_impl
 
-// 5. Индекс типа
-static_assert(index_of_v<char, ABC> == 0);
-static_assert(index_of_v<bool, ABC> == 1);
-static_assert(index_of_v<double, ABC> == 2);
-// static_assert(index_of_v<int, ABC> == ?); // ошибка компиляции, как и нужно
+using namespace type_list_impl;
 
-// 6. Добавление в конец
-using ABCC = push_back_t<float, ABC>; // char, bool, double, float
-static_assert(size_v<ABCC> == 4);
-static_assert(std::is_same_v<at_t<3, ABCC>, float>);
-
-// 7. Добавление в начало
-using IntABC = push_front_t<int, ABC>; // int, char, bool, double
-static_assert(size_v<IntABC> == 4);
-static_assert(std::is_same_v<at_t<0, IntABC>, int>);
-static_assert(std::is_same_v<at_t<1, IntABC>, char>);
-static_assert(std::is_same_v<at_t<2, IntABC>, bool>);
-static_assert(std::is_same_v<at_t<3, IntABC>, double>);
-
-// Дополнительно: проверка цепочек операций
-using Stacked = push_front_t<long, push_back_t<short, Single>>; // long, int, short
-static_assert(size_v<Stacked> == 3);
-static_assert(std::is_same_v<at_t<0, Stacked>, long>);
-static_assert(std::is_same_v<at_t<1, Stacked>, int>);
-static_assert(std::is_same_v<at_t<2, Stacked>, short>);
-
+// ==============================
+// Main function with demonstrations
+// ==============================
 int main() {
-    // Всё проверено на этапе компиляции
+    std::cout << "========== TypeList Demonstration ==========\n\n";
+
+    // Original list
+    using MyList = TypeList<int, double, char, std::string>;
+    std::cout << "Original list: ";
+    print_list(MyList{});
+
+    // 1. Get size
+    std::cout << "\n--- 1. List Size ---\n";
+    std::cout << "Size: " << Size_v<MyList> << "\n";
+    static_assert(Size_v<MyList> == 4);
+
+    // 2. Get element by index
+    std::cout << "\n--- 2. Get Element by Index ---\n";
+    using Element0 = At_t<0, MyList>;
+    using Element1 = At_t<1, MyList>;
+    using Element2 = At_t<2, MyList>;
+    using Element3 = At_t<3, MyList>;
+
+    std::cout << "Element at index 0: " << type_name<Element0>() << "\n";
+    std::cout << "Element at index 1: " << type_name<Element1>() << "\n";
+    std::cout << "Element at index 2: " << type_name<Element2>() << "\n";
+    std::cout << "Element at index 3: " << type_name<Element3>() << "\n";
+
+    static_assert(std::is_same_v<Element0, int>);
+    static_assert(std::is_same_v<Element1, double>);
+    static_assert(std::is_same_v<Element2, char>);
+    static_assert(std::is_same_v<Element3, std::string>);
+
+    // 3. Check if type exists
+    std::cout << "\n--- 3. Check if Type Exists ---\n";
+    std::cout << "Contains int? " << std::boolalpha << Contains_v<int, MyList> << "\n";
+    std::cout << "Contains float? " << Contains_v<float, MyList> << "\n";
+    std::cout << "Contains string? " << Contains_v<std::string, MyList> << "\n";
+
+    static_assert(Contains_v<int, MyList> == true);
+    static_assert(Contains_v<float, MyList> == false);
+    static_assert(Contains_v<std::string, MyList> == true);
+
+    // 4. Get index of type
+    std::cout << "\n--- 4. Get Index of Type ---\n";
+    std::cout << "Index of int: " << IndexOf_v<int, MyList> << "\n";
+    std::cout << "Index of char: " << IndexOf_v<char, MyList> << "\n";
+    std::cout << "Index of string: " << IndexOf_v<std::string, MyList> << "\n";
+
+    static_assert(IndexOf_v<int, MyList> == 0);
+    static_assert(IndexOf_v<char, MyList> == 2);
+    static_assert(IndexOf_v<std::string, MyList> == 3);
+
+    // 5. Add type to the end
+    std::cout << "\n--- 5. Add Type to the End ---\n";
+    using ListWithFloat = Append_t<float, MyList>;
+    std::cout << "After adding float to the end: ";
+    print_list(ListWithFloat{});
+    static_assert(Size_v<ListWithFloat> == 5);
+    static_assert(std::is_same_v<At_t<4, ListWithFloat>, float>);
+
+    // 6. Add type to the beginning
+    std::cout << "\n--- 6. Add Type to the Beginning ---\n";
+    using ListWithBool = Prepend_t<bool, MyList>;
+    std::cout << "After adding bool to the beginning: ";
+    print_list(ListWithBool{});
+    static_assert(Size_v<ListWithBool> == 5);
+    static_assert(std::is_same_v<At_t<0, ListWithBool>, bool>);
+    static_assert(std::is_same_v<At_t<1, ListWithBool>, int>);
+
+    // 7. Combined operations
+    std::cout << "\n--- 7. Combined Operations ---\n";
+    using Combined = Prepend_t<float, Append_t<double, TypeList<int, char>>>;
+    std::cout << "Combined list: ";
+    print_list(Combined{});
+    static_assert(std::is_same_v<Combined, TypeList<float, int, char, double>>);
+
+    // 8. Working with empty list
+    std::cout << "\n--- 8. Working with Empty List ---\n";
+    using Empty = TypeList<>;
+    std::cout << "Empty list: ";
+    print_list(Empty{});
+    std::cout << "Size of empty list: " << Size_v<Empty> << "\n";
+
+    using NonEmpty = Prepend_t<int, Append_t<double, Empty>>;
+    std::cout << "After adding types: ";
+    print_list(NonEmpty{});
+
+    // 9. Error handling (commented out)
+    std::cout << "\n--- 9. Error Handling ---\n";
+    std::cout << "The following operations would cause compilation errors:\n";
+    std::cout << "  - At_t<10, MyList> // index out of range\n";
+    std::cout << "  - IndexOf_v<float, MyList> // type not found\n";
+
+    std::cout << "\n========== All Tests Passed Successfully! ==========\n";
+
     return 0;
 }
